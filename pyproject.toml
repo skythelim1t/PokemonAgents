@@ -25,6 +25,11 @@ rl = [
     "stable-baselines3>=2.0.0",
     "torch>=2.0.0",
 ]
+llm = [
+    "anthropic>=0.25.0",
+    "openai>=1.0.0",
+    "boto3>=1.34.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -68,7 +68,7 @@ pokemon-agent-platform/
 ├── pyproject.toml
 ├── src/
 │   ├── __init__.py
-│   ├── platform.py              # CLI entry point (runs random agent)
+│   ├── platform.py              # CLI entry point (random/LLM agents)
 │   ├── emulator/
 │   │   ├── __init__.py
 │   │   ├── pyboy_wrapper.py     # PyBoy abstraction
@@ -77,9 +77,16 @@ pokemon-agent-platform/
 │   │   ├── __init__.py
 │   │   ├── base.py              # Abstract Agent interface
 │   │   ├── random_agent.py      # Baseline random agent
-│   │   └── ppo_agent.py         # PPO model wrapper (inference)
+│   │   ├── ppo_agent.py         # PPO model wrapper (inference)
+│   │   ├── llm_agent.py         # LLM strategic agent
+│   │   └── llm/
+│   │       ├── __init__.py
+│   │       ├── actions.py       # Strategic action definitions
+│   │       ├── providers.py     # Anthropic/OpenAI/Bedrock
+│   │       └── prompts.py       # Prompt templates
 │   ├── executor/
-│   │   └── __init__.py          # Not yet implemented
+│   │   ├── __init__.py
+│   │   └── action_executor.py   # Strategic action → button translator
 │   ├── environment/
 │   │   ├── __init__.py
 │   │   └── pokemon_env.py       # Gymnasium environment wrapper
@@ -135,16 +142,19 @@ These should be documented in `configs/pokemon_red.yaml` or `src/emulator/memory
 - [x] Pokedex counts (owned/seen)
 - [x] Save state management
 
-### Phase 3: Executor
+### Phase 3: Executor ⚠️ (Basic)
+- [x] Strategic action definitions (StrategicAction enum)
+- [x] Basic action executor (1:1 button mapping)
 - [ ] Menu navigation (Pokemon menu, bag, PC)
 - [ ] Overworld pathfinding
-- [ ] Battle action execution
+- [ ] Complex multi-button sequences
 
-### Phase 4: Agents ✅ (RL) / Partial (LLM)
+### Phase 4: Agents ✅
 - [x] PPO agent with CNN policy (stable-baselines3)
 - [x] Full training pipeline with parallel environments
 - [x] Multi-component reward shaping
-- [ ] LLM agent with strategic action space
+- [x] LLM agent with strategic action space
+- [x] Multi-provider support (Anthropic, OpenAI, Bedrock)
 
 ## Running the Platform
 
@@ -230,6 +240,48 @@ Models are saved to `models/ppo_YYYYMMDD_HHMMSS/`:
 - `final_model.zip` - Final model after training
 - `logs/` - TensorBoard logs
 
+## LLM Agent
+
+Run an LLM-powered agent that makes strategic decisions.
+
+### Providers
+
+| Provider | Models | Auth |
+|----------|--------|------|
+| `anthropic` | claude-3-5-sonnet, claude-3-haiku | `ANTHROPIC_API_KEY` |
+| `openai` | gpt-4o, gpt-4-turbo | `OPENAI_API_KEY` |
+| `bedrock` | Claude, Llama, Mistral via AWS | Default AWS credentials |
+
+### Usage
+
+```bash
+# Install LLM dependencies
+pip install -e ".[llm]"
+
+# Run with Anthropic (default)
+python -m src.platform --rom roms/pokemon_red.gb --agent llm --spectate
+
+# Run with Bedrock
+python -m src.platform --rom roms/pokemon_red.gb --agent llm --provider bedrock --model anthropic.claude-3-haiku-20240307-v1:0
+
+# With vision (include screen in prompts)
+python -m src.platform --rom roms/pokemon_red.gb --agent llm --vision --spectate
+```
+
+### Strategic Actions
+
+The LLM chooses from high-level actions:
+- `MOVE_UP`, `MOVE_DOWN`, `MOVE_LEFT`, `MOVE_RIGHT` - Navigation
+- `PRESS_A`, `PRESS_B` - Interaction
+- `USE_MOVE_1` - `USE_MOVE_4`, `FLEE` - Battle
+- `OPEN_MENU`, `WAIT` - Misc
+
+### Efficiency
+
+- `--action-skip N` - Only call LLM every N frames (default: 10)
+- Cache invalidation on battle state changes
+- Retry with exponential backoff on API errors
+
 ## Useful Commands
 
 ```bash
@@ -250,8 +302,11 @@ ruff check .
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install pyboy gymnasium pygame numpy stable-baselines3 torch
+# Install core + RL dependencies
+pip install -e ".[rl]"
+
+# Install LLM dependencies (optional)
+pip install -e ".[llm]"
 
 # Or install the project
 pip install -e .
