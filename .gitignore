@@ -1,0 +1,65 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ROMs (user provides their own legally obtained ROMs)
+roms/*.gb
+roms/*.gbc
+roms/*.gba
+roms/*.sav
+roms/*.ram
+roms/*.state
+
+# Save states
+saves/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Trained models (can be large)
+models/
+
+# TensorBoard
+runs/
+events.out.tfevents.*
+
+# Temp directories from training
+pokemon_env_*/
