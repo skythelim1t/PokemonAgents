@@ -240,6 +240,7 @@ python -m src.training.train_rl \
 | Batch size | 256 | 128 |
 | n_steps | 2048 | 2048 |
 | gamma | 0.997 | 0.997 |
+| Eval mode | Deterministic | Stochastic (prevents loops) |
 | Best for | Fast training | Complex sequences |
 
 ## Requirements

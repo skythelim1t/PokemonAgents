@@ -265,6 +265,7 @@ python -m src.training.train_rl \
 | Batch size | 256 | 128 |
 | n_steps | 2048 | 2048 |
 | gamma | 0.997 | 0.997 |
+| Eval mode | Deterministic | Stochastic (prevents loops) |
 | Best for | Fast training | Complex sequences |
 
 ### Training Duration Guide
@@ -543,6 +544,18 @@ Each parallel environment uses its own copy of the ROM and save state files. Thi
 
 - **PPO**: Uses `SubprocVecEnv` (separate processes, 24 envs)
 - **RecurrentPPO**: Uses `DummyVecEnv` (single process, 16 envs) to avoid SDL2/multiprocessing conflicts with LSTM
+
+### Evaluation Environment Setup
+
+The eval environment must match the training environment's observation format:
+
+1. **VecTransposeImage**: SB3 auto-wraps training env to convert HWC→CHW (PyTorch format). The eval env must also have this wrapper applied manually.
+
+2. **Deterministic mode**:
+   - PPO: `deterministic=True` (consistent eval)
+   - RecurrentPPO: `deterministic=False` (prevents getting stuck in loops without exploration noise)
+
+If eval shows 0 reward while training shows positive reward, check that `VecTransposeImage` is applied to the eval environment.
 
 ### Training Architecture
 
