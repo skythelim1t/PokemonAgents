@@ -106,8 +106,10 @@ def watch(
     paused = False
     running = True
     lstm_states = None  # For RecurrentPPO
+    # Use stochastic for recurrent to prevent getting stuck in loops
+    use_deterministic = agent != "recurrent"
 
-    print("\nStarting playback...\n")
+    print(f"\nStarting playback... (deterministic={use_deterministic})\n")
 
     try:
         while running and step < max_steps:
@@ -133,7 +135,7 @@ def watch(
                 continue
 
             # Get action from model (pass lstm_states for RecurrentPPO)
-            action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
+            action, lstm_states = model.predict(obs, state=lstm_states, deterministic=use_deterministic)
 
             # Step environment
             obs, reward, done, info = env.step(action)
