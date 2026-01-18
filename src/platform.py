@@ -378,6 +378,126 @@ def run_tool_agent(
         print(f"  Run ID: {run_id} (use --run-id {run_id} to resume)")
 
 
+def run_hybrid_agent(
+    rom_path: Path,
+    num_steps: int = 1000,
+    headless: bool = True,
+    init_state: Path | None = None,
+    speed: int = 1,
+    models_dir: Path = Path("models/skills"),
+    llm_provider: str = "anthropic",
+    llm_model: str = "claude-3-haiku-20240307",
+    log_decisions: bool = False,
+    recorder=None,
+) -> None:
+    """
+    Run the hybrid LLM+RL agent.
+
+    Uses an LLM orchestrator to delegate tasks to specialized RL skills.
+
+    Args:
+        rom_path: Path to the ROM file
+        num_steps: Number of steps to run
+        headless: Run without display window
+        init_state: Optional initial save state
+        speed: Emulation speed
+        models_dir: Directory containing trained skill models
+        llm_provider: LLM provider for orchestrator
+        llm_model: Model name for orchestrator
+        log_decisions: Print LLM decisions
+        recorder: Optional PlaythroughRecorder
+    """
+    from src.agents.hybrid import Orchestrator
+
+    env = PokemonRedEnv(
+        rom_path=rom_path,
+        init_state=init_state,
+        headless=headless,
+        action_freq=24,
+        max_steps=num_steps,
+        speed=speed,
+    )
+
+    orchestrator = Orchestrator(
+        models_dir=models_dir,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
+
+    print(f"Starting Hybrid Agent for {num_steps} steps...")
+    print(f"ROM: {rom_path}")
+    print(f"Skills Directory: {models_dir}")
+    print(f"LLM: {llm_provider}/{llm_model}")
+    print(f"Headless: {headless}")
+    if recorder:
+        print(f"Recording to: {recorder.output_dir}")
+    print("-" * 50)
+
+    obs, info = env.reset()
+    orchestrator.reset()
+
+    if not headless and env.emulator is not None:
+        print("Running initial frames for display...")
+        env.emulator.tick(30)
+
+    total_reward = 0.0
+    step = 0
+
+    try:
+        while step < num_steps:
+            action, skill_changed = orchestrator.step(obs, info)
+
+            if skill_changed and log_decisions:
+                decision = orchestrator.last_decision
+                if decision:
+                    print(f"\n[LLM Decision] Skill: {decision.get('skill')}")
+                    print(f"  Config: {decision.get('config')}")
+                    print(f"  Reason: {decision.get('reasoning')}\n")
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward
+
+            # Record step if recorder is active
+            if recorder:
+                recorder.record_step(step, action, obs, reward, info)
+
+            # For spectate mode
+            if not headless and env.emulator is not None:
+                env.emulator.tick(2)
+
+            # Print progress every 50 steps
+            if step % 50 == 0:
+                active_skill = orchestrator.skill_router.active_skill_name or "none"
+                print(
+                    f"Step {step:5d} | "
+                    f"Reward: {total_reward:8.2f} | "
+                    f"Skill: {active_skill:10s} | "
+                    f"Badges: {info.get('badges', 0)} | "
+                    f"Battle: {info.get('in_battle', False)}"
+                )
+
+            if terminated or truncated:
+                print(f"\nEpisode ended at step {step}")
+                break
+
+            step += 1
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+
+    finally:
+        env.close()
+        if recorder:
+            recorder.stop()
+
+    print("-" * 50)
+    print(f"Final Stats:")
+    print(f"  Total Steps: {step}")
+    print(f"  Total Reward: {total_reward:.2f}")
+    print(f"  Final Badges: {info.get('badges', 0)}")
+    print(f"  Maps Visited: {info.get('maps_visited', 0)}")
+
+
 def main() -> None:
     """Main entry point."""
     # Configure logging to see debug output
@@ -428,8 +548,8 @@ def main() -> None:
         "--agent",
         type=str,
         default="random",
-        choices=["random", "llm", "tool"],
-        help="Agent type to run: random, llm (text parsing), tool (function calling)",
+        choices=["random", "llm", "tool", "hybrid"],
+        help="Agent type to run: random, llm (text parsing), tool (function calling), hybrid (LLM+RL)",
     )
 
     # LLM-specific options
@@ -461,6 +581,19 @@ def main() -> None:
         type=str,
         default=None,
         help="Run ID for resuming a previous session (loads/saves knowledge)",
+    )
+
+    # Hybrid agent options
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path("models/skills"),
+        help="Directory containing trained skill models (default: models/skills)",
+    )
+    parser.add_argument(
+        "--log-decisions",
+        action="store_true",
+        help="Log LLM orchestrator decisions (hybrid agent)",
     )
 
     # Recording options
@@ -517,6 +650,22 @@ def main() -> None:
             model=args.model,
             use_vision=args.vision,
             log_conversation=args.log_conversation,
+            recorder=recorder,
+        )
+    elif args.agent == "hybrid":
+        # Hybrid LLM+RL agent
+        speed = args.speed if args.speed > 0 else (1 if args.spectate else 0)
+        recorder = create_recorder(args, "hybrid")
+        run_hybrid_agent(
+            rom_path=args.rom,
+            num_steps=args.steps,
+            headless=headless,
+            init_state=args.state,
+            speed=speed,
+            models_dir=args.models_dir,
+            llm_provider=args.provider,
+            llm_model=args.model,
+            log_decisions=args.log_decisions,
             recorder=recorder,
         )
     else:
