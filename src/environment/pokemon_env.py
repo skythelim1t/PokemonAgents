@@ -109,6 +109,7 @@ class PokemonRedEnv(gym.Env):
         self._battle_start_party_hp = 0  # Party HP when battle started
         self._battle_start_turn = 0  # Turn count when battle started
         self._is_trainer_battle = False  # Whether current battle is trainer
+        self._battle_won = False  # Whether we won the battle (defeated enemy or caught)
 
     def reset(
         self,
@@ -166,6 +167,7 @@ class PokemonRedEnv(gym.Env):
         self._battle_start_party_hp = 0
         self._battle_start_turn = 0
         self._is_trainer_battle = False
+        self._battle_won = False
 
         observation = self._get_observation()
         info = self._get_info()
@@ -258,6 +260,7 @@ class PokemonRedEnv(gym.Env):
             # Reward for catching new Pokemon
             reward += 5.0 * (pokemon_caught - self._prev_pokemon_caught)
             self._prev_pokemon_caught = pokemon_caught
+            self._battle_won = True  # Catching counts as winning
 
         # ===================
         # BATTLE REWARDS (with diminishing returns to prevent grinding)
@@ -272,6 +275,7 @@ class PokemonRedEnv(gym.Env):
             self._battle_start_party_hp, _ = self.game_state.get_total_party_hp()
             self._battle_start_turn = self.game_state.get_battle_turn_count()
             self._is_trainer_battle = self.game_state.is_trainer_battle()
+            self._battle_won = False  # Reset for new battle
 
         if in_battle:
             enemy_hp, enemy_max_hp = self.game_state.get_enemy_hp()
@@ -291,6 +295,7 @@ class PokemonRedEnv(gym.Env):
             if self._was_in_battle and self._prev_enemy_hp > 0 and enemy_hp == 0:
                 reward += 1.0 * diminish  # Knocked out enemy (diminishing)
                 self._battles_per_map[map_id] = battles_here + 1  # Track battle
+                self._battle_won = True  # Mark battle as won
 
             self._prev_enemy_hp = enemy_hp
 
@@ -309,22 +314,25 @@ class PokemonRedEnv(gym.Env):
             if party_alive == 0:
                 reward -= 5.0  # Whiteout penalty
 
-            # Trainer battle bonus (more valuable than wild)
-            if self._is_trainer_battle:
-                reward += 2.0  # Trainer battle won bonus
+            # Only give victory bonuses if we actually won (not if we fled)
+            if self._battle_won:
+                # Trainer battle bonus (more valuable than wild)
+                if self._is_trainer_battle:
+                    reward += 2.0  # Trainer battle won bonus
 
-            # No damage taken bonus
-            if current_party_hp >= self._battle_start_party_hp and self._battle_start_party_hp > 0:
-                reward += 0.5  # Won without taking damage
+                # No damage taken bonus
+                if current_party_hp >= self._battle_start_party_hp and self._battle_start_party_hp > 0:
+                    reward += 0.5  # Won without taking damage
 
-            # Efficient battle bonus (fewer turns = better)
-            battle_turns = self.game_state.get_battle_turn_count() - self._battle_start_turn
-            if battle_turns <= 2:
-                reward += 0.2 * (3 - battle_turns)  # +0.4 for 1 turn, +0.2 for 2 turns
+                # Efficient battle bonus (fewer turns = better)
+                battle_turns = self.game_state.get_battle_turn_count() - self._battle_start_turn
+                if battle_turns <= 2:
+                    reward += 0.2 * (3 - battle_turns)  # +0.4 for 1 turn, +0.2 for 2 turns
 
             self._prev_party_alive = party_alive
             self._prev_enemy_hp = 0  # Reset enemy HP tracking
             self._is_trainer_battle = False
+            self._battle_won = False  # Reset for next battle
 
         # Track battle state
         self._was_in_battle = in_battle
@@ -362,7 +370,7 @@ class PokemonRedEnv(gym.Env):
         coord = (map_id, x, y)
         if coord not in self._visited_coords:
             self._visited_coords.add(coord)
-            reward += 0.02  # Reward for new tiles (was 0.005)
+            reward += 0.005  # Reward for new tiles
 
         # ===================
         # MONEY REWARDS
