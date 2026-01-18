@@ -180,6 +180,7 @@ def train(
     eval_freq: int = 25_000,
     spectate: bool = False,
     agent: str = "ppo",
+    resume: Path | None = None,
 ) -> None:
     """
     Train a PPO agent on Pokemon Red.
@@ -200,24 +201,43 @@ def train(
         eval_freq: Evaluate every N steps
         spectate: Show a live pygame window during training
         agent: RL algorithm - 'ppo' or 'recurrent' (PPO with LSTM)
+        resume: Path to model to resume training from
     """
     # Determine n_stack based on agent type
     # RecurrentPPO uses LSTM for memory, so less frame stacking needed
     n_stack = 1 if agent == "recurrent" else 4
 
-    # Create output directories
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_dir / f"{agent}_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log_dir = run_dir / "logs"
-    log_dir.mkdir(exist_ok=True)
-    checkpoint_dir = run_dir / "checkpoints"
-    checkpoint_dir.mkdir(exist_ok=True)
+    # Set up output directories
+    if resume:
+        # Infer run directory from model path
+        # e.g., models/recurrent_20260118_022657/checkpoints/model.zip -> models/recurrent_20260118_022657
+        # e.g., models/recurrent_20260118_022657/best_model/best_model.zip -> models/recurrent_20260118_022657
+        resume_path = Path(resume)
+        if resume_path.parent.name in ("checkpoints", "best_model"):
+            run_dir = resume_path.parent.parent
+        else:
+            run_dir = resume_path.parent
+        log_dir = run_dir / "logs"
+        checkpoint_dir = run_dir / "checkpoints"
+        print(f"Resuming in directory: {run_dir}")
+    else:
+        # Create new output directories
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = output_dir / f"{agent}_{timestamp}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = run_dir / "logs"
+        log_dir.mkdir(exist_ok=True)
+        checkpoint_dir = run_dir / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
 
     print("=" * 60)
     print("Pokemon Red RL Training")
     print("=" * 60)
     print(f"Agent: {agent.upper()}")
+    if resume:
+        print(f"Mode: RESUME from {resume}")
+    else:
+        print("Mode: NEW training run")
     print(f"ROM: {rom_path}")
     print(f"Initial state: {init_state}")
     print(f"Output directory: {run_dir}")
@@ -300,44 +320,65 @@ def train(
 
     callbacks = CallbackList(callback_list)
 
-    # Create RL agent
+    # Create or load RL agent
     # Use MPS (Apple Silicon GPU) if available, otherwise CPU
     import torch
     device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-    if agent == "recurrent":
-        from sb3_contrib import RecurrentPPO
-        print(f"Creating RecurrentPPO agent on device: {device}")
-        # batch_size must be divisible by actual_n_envs for RecurrentPPO
-        recurrent_batch_size = 128  # 128 is divisible by 16
-        model = RecurrentPPO(
-            "CnnLstmPolicy",
-            env,
-            learning_rate=learning_rate,
-            n_steps=n_steps,
-            batch_size=recurrent_batch_size,
-            n_epochs=n_epochs,
-            gamma=gamma,
-            ent_coef=0.05,  # Entropy bonus for more exploration
-            verbose=1,
-            tensorboard_log=str(log_dir),
-            device=device,
-        )
+    if resume:
+        # Resume from existing model
+        print(f"Loading model from: {resume}")
+        if agent == "recurrent":
+            from sb3_contrib import RecurrentPPO
+            model = RecurrentPPO.load(
+                str(resume),
+                env=env,
+                device=device,
+                tensorboard_log=str(log_dir),
+            )
+        else:
+            model = PPO.load(
+                str(resume),
+                env=env,
+                device=device,
+                tensorboard_log=str(log_dir),
+            )
+        print(f"Model loaded on device: {device}")
     else:
-        print(f"Creating PPO agent on device: {device}")
-        model = PPO(
-            "CnnPolicy",
-            env,
-            learning_rate=learning_rate,
-            n_steps=n_steps,
-            batch_size=batch_size,
-            n_epochs=n_epochs,
-            gamma=gamma,
-            ent_coef=0.05,  # Entropy bonus for more exploration
-            verbose=1,
-            tensorboard_log=str(log_dir),
-            device=device,
-        )
+        # Create new model
+        if agent == "recurrent":
+            from sb3_contrib import RecurrentPPO
+            print(f"Creating RecurrentPPO agent on device: {device}")
+            # batch_size must be divisible by actual_n_envs for RecurrentPPO
+            recurrent_batch_size = 128  # 128 is divisible by 16
+            model = RecurrentPPO(
+                "CnnLstmPolicy",
+                env,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=recurrent_batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                ent_coef=0.05,  # Entropy bonus for more exploration
+                verbose=1,
+                tensorboard_log=str(log_dir),
+                device=device,
+            )
+        else:
+            print(f"Creating PPO agent on device: {device}")
+            model = PPO(
+                "CnnPolicy",
+                env,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                ent_coef=0.05,  # Entropy bonus for more exploration
+                verbose=1,
+                tensorboard_log=str(log_dir),
+                device=device,
+            )
 
     print(f"\nPolicy architecture:")
     print(model.policy)
@@ -352,6 +393,7 @@ def train(
             total_timesteps=total_timesteps,
             callback=callbacks,
             progress_bar=True,
+            reset_num_timesteps=not resume,  # False when resuming to continue step count
         )
     except KeyboardInterrupt:
         print("\n\nTraining interrupted by user.")
@@ -407,6 +449,10 @@ def main():
         "--agent", type=str, default="ppo", choices=["ppo", "recurrent"],
         help="RL algorithm: 'ppo' (standard) or 'recurrent' (PPO with LSTM memory)"
     )
+    parser.add_argument(
+        "--resume", type=Path, default=None,
+        help="Path to model to resume training from (.zip file)"
+    )
 
     args = parser.parse_args()
 
@@ -425,6 +471,7 @@ def main():
         checkpoint_freq=args.checkpoint_freq,
         spectate=args.spectate,
         agent=args.agent,
+        resume=args.resume,
     )
 
 
