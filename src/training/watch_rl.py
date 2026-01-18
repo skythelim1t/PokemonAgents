@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pygame
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
+from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
 
 from src.environment.pokemon_env import PokemonRedEnv
 
@@ -79,6 +79,9 @@ def watch(
         print(f"Adding frame stacking with n_stack={n_stack}")
         env = VecFrameStack(env, n_stack=n_stack)
 
+    # Apply VecTransposeImage to match training env (HWC -> CHW)
+    env = VecTransposeImage(env)
+
     # Setup pygame display
     pygame.init()
     scale = 4
@@ -87,7 +90,14 @@ def watch(
     clock = pygame.time.Clock()
 
     # Get the underlying PyBoy instance for rendering
-    underlying_env = env.envs[0]
+    # Navigate through wrappers: VecTransposeImage -> VecFrameStack -> DummyVecEnv -> PokemonRedEnv
+    def get_underlying_env(vec_env):
+        """Unwrap to get the actual PokemonRedEnv."""
+        while hasattr(vec_env, 'venv'):
+            vec_env = vec_env.venv
+        return vec_env.envs[0]
+
+    underlying_env = get_underlying_env(env)
 
     obs = env.reset()
     done = False
@@ -95,6 +105,7 @@ def watch(
     step = 0
     paused = False
     running = True
+    lstm_states = None  # For RecurrentPPO
 
     print("\nStarting playback...\n")
 
@@ -121,8 +132,8 @@ def watch(
                 clock.tick(30)
                 continue
 
-            # Get action from model
-            action, _ = model.predict(obs, deterministic=True)
+            # Get action from model (pass lstm_states for RecurrentPPO)
+            action, lstm_states = model.predict(obs, state=lstm_states, deterministic=True)
 
             # Step environment
             obs, reward, done, info = env.step(action)
@@ -153,6 +164,7 @@ def watch(
                 print(f"Total reward: {total_reward:.1f}")
                 obs = env.reset()
                 total_reward = 0
+                lstm_states = None  # Reset LSTM states for new episode
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
