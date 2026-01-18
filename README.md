@@ -163,6 +163,20 @@ python -m src.platform --rom roms/pokemon_red.gb --agent llm --vision --spectate
 | Whiteout | -5.0 | All Pokemon fainted |
 | Run away | 0 | No reward for fleeing |
 
+### Dynamic Episode Length
+
+Episodes get longer as the agent progresses, giving more time to explore further:
+
+```
+max_steps = 10,240 + (completed_events × 2,048)
+```
+
+| Events Completed | Max Steps |
+|------------------|-----------|
+| 0 | 10,240 |
+| 5 | 20,480 |
+| 10 | 30,720 |
+
 ### Training Performance
 
 On Apple M3 Max with 24 parallel environments:

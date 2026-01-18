@@ -321,6 +321,22 @@ The environment provides rewards for game progress. **Exploration is persistent 
 | Whiteout | -5.0 | All Pokemon fainted |
 | Run away | 0 | No reward for fleeing |
 
+### Dynamic Episode Length
+
+Episodes get longer as the agent completes event flags (story progress):
+
+```
+max_steps = 10,240 + (completed_events × 2,048)
+```
+
+| Events Completed | Max Steps |
+|------------------|-----------|
+| 0 | 10,240 |
+| 5 | 20,480 |
+| 10 | 30,720 |
+
+This implements curriculum-style training where the agent gets more time as it progresses.
+
 ### Training Output
 
 Models are saved to `models/{agent}_YYYYMMDD_HHMMSS/` (e.g., `models/ppo_20240115_143022/` or `models/recurrent_20240115_143022/`):
