@@ -14,7 +14,13 @@ from stable_baselines3.common.callbacks import (
     EvalCallback,
 )
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack
+from stable_baselines3.common.vec_env import (
+    DummyVecEnv,
+    SubprocVecEnv,
+    VecFrameStack,
+    VecTransposeImage,
+    is_vecenv_wrapped,
+)
 
 from src.environment.pokemon_env import PokemonRedEnv
 
@@ -63,6 +69,7 @@ class SpectateCallback(BaseCallback):
 
         self.spectate_env = DummyVecEnv([make_spectate_env])
         self.spectate_env = VecFrameStack(self.spectate_env, n_stack=self.n_stack)
+        self.spectate_env = VecTransposeImage(self.spectate_env)
 
         # Initialize pygame
         pygame.init()
@@ -251,6 +258,8 @@ def train(
         vec_env_cls=DummyVecEnv,  # Always use DummyVecEnv for eval (single env)
     )
     eval_env = VecFrameStack(eval_env, n_stack=n_stack)  # Must match training env
+    # Apply VecTransposeImage to match what SB3 auto-applies to training env
+    eval_env = VecTransposeImage(eval_env)
 
     # Setup callbacks
     checkpoint_callback = CheckpointCallback(
@@ -261,13 +270,17 @@ def train(
         save_vecnormalize=False,
     )
 
+    # For RecurrentPPO, deterministic=False gives more representative eval
+    # (deterministic can cause agent to get stuck in loops without exploration)
+    eval_deterministic = agent != "recurrent"
+
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=str(run_dir / "best_model"),
         log_path=str(log_dir),
         eval_freq=eval_freq // actual_n_envs,
         n_eval_episodes=3,
-        deterministic=True,
+        deterministic=eval_deterministic,
     )
 
     callback_list = [checkpoint_callback, eval_callback]
