@@ -157,10 +157,11 @@ python -m src.platform --rom roms/pokemon_red.gb --agent llm --vision --spectate
 | No damage taken | +0.5 | Battle won without HP loss |
 | OHKO bonus | +0.5 | One-hit KO |
 | Healing | +0.2 | Scaled by HP healed |
-| Explore new tile | +0.02 | Persists across episodes |
+| Explore new tile | +0.005 | Persists across episodes |
 | Money gained | +0.01 | Per $100 |
 | Pokemon faints | -1.0 | Per fainted party member |
 | Whiteout | -5.0 | All Pokemon fainted |
+| Run away | 0 | No reward for fleeing |
 
 ### Training Performance
 
@@ -223,6 +224,8 @@ python -m src.training.train_rl \
 | Temporal context | Frame stacking (4 frames) | LSTM memory |
 | Parallel envs | 24 (SubprocVecEnv) | 16 (DummyVecEnv) |
 | Batch size | 256 | 128 |
+| n_steps | 2048 | 2048 |
+| gamma | 0.997 | 0.997 |
 | Best for | Fast training | Complex sequences |
 
 ## Requirements

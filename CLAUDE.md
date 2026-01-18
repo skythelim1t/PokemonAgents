@@ -263,6 +263,8 @@ python -m src.training.train_rl \
 | Temporal context | Frame stacking (4 frames) | LSTM memory |
 | Parallel envs | 24 (SubprocVecEnv) | 16 (DummyVecEnv) |
 | Batch size | 256 | 128 |
+| n_steps | 2048 | 2048 |
+| gamma | 0.997 | 0.997 |
 | Best for | Fast training | Complex sequences |
 
 ### Training Duration Guide
@@ -313,10 +315,11 @@ The environment provides rewards for game progress. **Exploration is persistent 
 | Damage enemy | +0.5 × (damage/max_hp) | Normalized |
 | Healing | +0.2 × (healed/max_hp) | Outside battle |
 | Efficient battle | +0.2 to +0.4 | +0.4 for 1-turn, +0.2 for 2-turn |
-| Explore new tile | +0.02 | Persists across episodes |
+| Explore new tile | +0.005 | Persists across episodes |
 | Money gained | +0.01 per $100 | |
 | Pokemon faints | -1.0 | Per fainted party member |
 | Whiteout | -5.0 | All Pokemon fainted |
+| Run away | 0 | No reward for fleeing |
 
 ### Training Output
 
