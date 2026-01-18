@@ -26,6 +26,10 @@ class PokemonRedEnv(gym.Env):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
+    # Dynamic episode length constants
+    BASE_MAX_STEPS = 10240
+    STEPS_PER_EVENT = 2048
+
     def __init__(
         self,
         rom_path: Path | str,
@@ -110,6 +114,9 @@ class PokemonRedEnv(gym.Env):
         self._battle_start_turn = 0  # Turn count when battle started
         self._is_trainer_battle = False  # Whether current battle is trainer
         self._battle_won = False  # Whether we won the battle (defeated enemy or caught)
+
+        # Persistent across episodes for dynamic episode length
+        self._total_events_completed: set[int] = set()
 
     def reset(
         self,
@@ -200,7 +207,9 @@ class PokemonRedEnv(gym.Env):
 
         # Check termination conditions
         terminated = False  # Pokemon Red doesn't really "end"
-        truncated = self.step_count >= self.max_steps
+        # Dynamic episode length: more events = longer episodes
+        dynamic_max_steps = self.BASE_MAX_STEPS + (len(self._total_events_completed) * self.STEPS_PER_EVENT)
+        truncated = self.step_count >= dynamic_max_steps
 
         observation = self._get_observation()
         info = self._get_info()
@@ -400,6 +409,7 @@ class PokemonRedEnv(gym.Env):
         if new_flags:
             reward += 3.0 * len(new_flags)  # +3.0 per new event flag
             self._prev_event_flags = current_flags
+            self._total_events_completed.update(new_flags)  # Track for dynamic episode length
 
         return reward
 
@@ -427,6 +437,8 @@ class PokemonRedEnv(gym.Env):
             "party_hp": party_hp,
             "party_max_hp": party_max_hp,
             "party_alive": self.game_state.get_party_alive_count(),
+            "events_completed": len(self._total_events_completed),
+            "max_steps": self.BASE_MAX_STEPS + (len(self._total_events_completed) * self.STEPS_PER_EVENT),
         }
 
         # Add battle info if in battle
