@@ -1,7 +1,11 @@
 """PyBoy emulator wrapper for Pokemon games."""
 
+import logging
 from pathlib import Path
 from typing import Literal
+
+# Suppress PyBoy warnings (sound buffer overrun, old save state version, etc.)
+logging.getLogger("pyboy").setLevel(logging.ERROR)
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,7 +38,12 @@ class EmulatorWrapper:
             raise FileNotFoundError(f"ROM not found: {self.rom_path}")
 
         window_type: Literal["null", "SDL2"] = "null" if headless else "SDL2"
-        self.pyboy = PyBoy(str(self.rom_path), window=window_type)
+        self.pyboy = PyBoy(
+            str(self.rom_path),
+            window=window_type,
+            sound=False,
+            sound_emulated=False,
+        )
         self.pyboy.set_emulation_speed(speed)
 
     def tick(self, count: int = 1) -> None:
@@ -75,8 +84,9 @@ class EmulatorWrapper:
     def get_screen(self) -> NDArray[np.uint8]:
         """Get the current screen as a numpy array (H, W, 3) RGB."""
         # PyBoy returns RGBA, we convert to RGB
+        # .copy() ensures it's a contiguous array (required for multiprocessing/pickling)
         rgba = np.array(self.pyboy.screen.image)
-        return rgba[:, :, :3]  # Drop alpha channel
+        return rgba[:, :, :3].copy()
 
     def get_screen_grayscale(self) -> NDArray[np.uint8]:
         """Get the current screen as grayscale (H, W)."""
@@ -90,6 +100,19 @@ class EmulatorWrapper:
     def read_memory_range(self, start: int, length: int) -> list[int]:
         """Read a range of bytes from memory."""
         return [self.pyboy.memory[start + i] for i in range(length)]
+
+    def get_sprite_position(self, sprite_index: int = 0) -> tuple[int, int]:
+        """
+        Get a sprite's screen position in pixels using PyBoy's sprite API.
+
+        Args:
+            sprite_index: OAM sprite index (0 = player in Pokemon)
+
+        Returns:
+            (x, y) pixel coordinates on screen
+        """
+        sprite = self.pyboy.sprite(sprite_index)
+        return sprite.x, sprite.y
 
     def save_state(self, path: Path | str) -> None:
         """Save the current emulator state to a file."""

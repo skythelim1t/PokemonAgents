@@ -7,17 +7,20 @@ Train AI agents to play Pokemon Red using reinforcement learning or LLM-based de
 
 ## Overview
 
-A local-first platform for building and running AI agents on Pokemon Red. Supports two agent types:
+A local-first platform for building and running AI agents on Pokemon Red. Supports multiple agent types:
 
-- **RL Agents (PPO)** - Learn from pixels using reinforcement learning
+- **RL Agents**
+  - **PPO** - Standard PPO with CNN policy and frame stacking
+  - **RecurrentPPO** - PPO with LSTM memory for temporal reasoning
 - **LLM Agents** - Make strategic decisions using Claude, GPT, or AWS Bedrock models
 
 **Features:**
-- **Parallel RL training** - 24 environments running simultaneously
+- **Parallel RL training** - Up to 24 environments running simultaneously
 - **Apple Silicon optimized** - MPS acceleration for M1/M2/M3 Macs
 - **LLM support** - Anthropic Claude, OpenAI GPT, AWS Bedrock
 - **Rich reward shaping** - Badges, exploration, battles, leveling, catching Pokemon
-- **Live visualization** - Watch agents play in real-time with Pygame
+- **Persistent exploration** - Tiles tracked across episodes to encourage new discoveries
+- **Live spectate mode** - Watch RL training in real-time with `--spectate`
 - **TensorBoard integration** - Monitor training progress
 
 ## Quick Start
@@ -62,17 +65,24 @@ pip install -e .
 # Train with PPO (headless, fast)
 python -m src.training.train_rl --rom roms/pokemon_red.gb --state saves/ready_to_play.state
 
-# Train with live visualization (slower)
-python -m src.training.train_visual --rom roms/pokemon_red.gb --state saves/ready_to_play.state
+# Train with PPO and live spectate window
+python -m src.training.train_rl --rom roms/pokemon_red.gb --state saves/ready_to_play.state --spectate
+
+# Train with RecurrentPPO (LSTM memory)
+python -m src.training.train_rl --rom roms/pokemon_red.gb --state saves/ready_to_play.state --agent recurrent
+
+# Train RecurrentPPO with spectate
+python -m src.training.train_rl --rom roms/pokemon_red.gb --state saves/ready_to_play.state --agent recurrent --spectate
 ```
 
 ### Watch a Trained Model
 
 ```bash
-python -m src.training.run_model \
-  --rom roms/pokemon_red.gb \
-  --state saves/ready_to_play.state \
-  --model models/ppo_*/final_model.zip
+# Watch PPO model
+python -m src.training.watch_rl --rom roms/pokemon_red.gb --model models/ppo_*/final_model.zip
+
+# Watch RecurrentPPO model
+python -m src.training.watch_rl --rom roms/pokemon_red.gb --model models/recurrent_*/final_model.zip --agent recurrent
 ```
 
 ## LLM Agent
@@ -122,27 +132,35 @@ python -m src.platform --rom roms/pokemon_red.gb --agent llm --vision --spectate
 ### Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  PyBoy Emulator │────▶│  Gymnasium Env  │────▶│  PPO Agent      │
-│  (Pokemon Red)  │◀────│  (Rewards/Obs)  │◀────│  (CNN Policy)   │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────┐
+│  PyBoy Emulator │────▶│  Gymnasium Env  │────▶│  RL Agent           │
+│  (Pokemon Red)  │◀────│  (Rewards/Obs)  │◀────│  PPO / RecurrentPPO │
+└─────────────────┘     └─────────────────┘     └─────────────────────┘
 ```
 
 1. **Emulator**: PyBoy runs Pokemon Red, exposing screen pixels and RAM
 2. **Environment**: Gymnasium wrapper calculates rewards from game state
-3. **Agent**: PPO with CNN learns to maximize rewards over time
+3. **Agent**: PPO (CNN + frame stacking) or RecurrentPPO (CNN + LSTM) learns to maximize rewards
 
 ### Reward System
 
-| Event | Reward |
-|-------|--------|
-| Earn badge | +10.0 |
-| Catch Pokemon | +5.0 |
-| Discover new map | +2.0 |
-| Defeat enemy | +1.0 |
-| Level up | +0.5 |
-| Explore new tile | +0.005 |
-| Pokemon faints | -1.0 |
+| Event | Reward | Notes |
+|-------|--------|-------|
+| Earn badge | +10.0 | Per badge |
+| Catch Pokemon | +5.0 | Per new Pokemon |
+| Discover new map | +5.0 | Persists across episodes |
+| Event flag triggered | +3.0 | Story progress |
+| Trainer battle won | +2.0 | Bonus on top of battle rewards |
+| Defeat enemy | +1.0 | With diminishing returns per map |
+| Level up | +0.5 | With diminishing returns |
+| Item gained | +0.5 | Per item |
+| No damage taken | +0.5 | Battle won without HP loss |
+| OHKO bonus | +0.5 | One-hit KO |
+| Healing | +0.2 | Scaled by HP healed |
+| Explore new tile | +0.02 | Persists across episodes |
+| Money gained | +0.01 | Per $100 |
+| Pokemon faints | -1.0 | Per fainted party member |
+| Whiteout | -5.0 | All Pokemon fainted |
 
 ### Training Performance
 
@@ -190,10 +208,22 @@ Training parameters can be adjusted via command line:
 python -m src.training.train_rl \
   --rom roms/pokemon_red.gb \
   --state saves/ready_to_play.state \
-  --envs 24 \              # Parallel environments
+  --agent ppo \            # ppo or recurrent
+  --envs 24 \              # Parallel environments (max 16 for recurrent)
   --timesteps 10000000 \   # Total training steps
-  --lr 0.00025             # Learning rate
+  --lr 0.00025 \           # Learning rate
+  --spectate               # Live visualization window
 ```
+
+### Agent Comparison
+
+| Feature | PPO | RecurrentPPO |
+|---------|-----|--------------|
+| Policy | CnnPolicy | CnnLstmPolicy |
+| Temporal context | Frame stacking (4 frames) | LSTM memory |
+| Parallel envs | 24 (SubprocVecEnv) | 16 (DummyVecEnv) |
+| Batch size | 256 | 128 |
+| Best for | Fast training | Complex sequences |
 
 ## Requirements
 
@@ -203,7 +233,8 @@ python -m src.training.train_rl \
 - [Pygame](https://www.pygame.org/) - Visualization
 
 **RL Training:**
-- [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) - RL algorithms
+- [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) - PPO algorithm
+- [SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib) - RecurrentPPO
 - [PyTorch](https://pytorch.org/) - Neural networks
 
 **LLM Agent:**

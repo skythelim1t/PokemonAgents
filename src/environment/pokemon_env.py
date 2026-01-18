@@ -10,6 +10,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
+from PIL import Image
 
 from src.emulator.memory_map import GameState
 from src.emulator.pyboy_wrapper import BUTTONS, EmulatorWrapper
@@ -34,6 +35,7 @@ class PokemonRedEnv(gym.Env):
         max_steps: int = 2048,
         render_mode: str | None = None,
         speed: int = 0,
+        downscale: bool = False,  # Downscale observations for faster RL training
     ) -> None:
         """
         Initialize the Pokemon Red environment.
@@ -46,6 +48,7 @@ class PokemonRedEnv(gym.Env):
             max_steps: Maximum steps per episode
             render_mode: 'human' for display, 'rgb_array' for array output
             speed: Emulation speed (0=unlimited, 1=normal, 2=2x, etc.)
+            downscale: If True, downscale observations to 36x40 (16x smaller) for faster training
         """
         super().__init__()
 
@@ -56,6 +59,7 @@ class PokemonRedEnv(gym.Env):
         self.max_steps = max_steps
         self.render_mode = render_mode
         self.speed = speed
+        self.downscale = downscale
 
         # Create isolated temp directory for this env instance (avoids file contention)
         self._temp_dir = Path(tempfile.mkdtemp(prefix=f"pokemon_env_{uuid.uuid4().hex[:8]}_"))
@@ -74,8 +78,10 @@ class PokemonRedEnv(gym.Env):
 
         # Define action and observation spaces
         self.action_space = spaces.Discrete(len(BUTTONS))
+        # Observation shape: full (144, 160, 3) or downscaled (36, 40, 3)
+        obs_shape = (36, 40, 3) if self.downscale else (144, 160, 3)
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(144, 160, 3), dtype=np.uint8
+            low=0, high=255, shape=obs_shape, dtype=np.uint8
         )
 
         # Tracking for rewards
@@ -91,6 +97,18 @@ class PokemonRedEnv(gym.Env):
         self._was_in_battle = False
         self._prev_pokemon_caught = 0
         self._prev_party_alive = 0
+
+        # Diminishing returns tracking (prevents grinding same area)
+        self._battles_per_map: dict[int, int] = {}
+
+        # New reward tracking
+        self._prev_money = 0
+        self._prev_pokemon_seen = 0
+        self._prev_item_count = 0
+        self._prev_event_flags: set[int] = set()
+        self._battle_start_party_hp = 0  # Party HP when battle started
+        self._battle_start_turn = 0  # Turn count when battle started
+        self._is_trainer_battle = False  # Whether current battle is trainer
 
     def reset(
         self,
@@ -127,9 +145,10 @@ class PokemonRedEnv(gym.Env):
         self._prev_badges = self.game_state.get_badge_count()
         self._prev_total_level = self.game_state.get_total_level()
         self._prev_map_id = self.game_state.get_map_id()
-        self._visited_maps = {self._prev_map_id}
+        # Persist visited maps/coords across episodes (don't reset)
+        self._visited_maps.add(self._prev_map_id)
         x, y = self.game_state.get_player_position()
-        self._visited_coords = {(self._prev_map_id, x, y)}
+        self._visited_coords.add((self._prev_map_id, x, y))
 
         # Reset battle tracking
         self._prev_party_hp, _ = self.game_state.get_total_party_hp()
@@ -137,6 +156,16 @@ class PokemonRedEnv(gym.Env):
         self._was_in_battle = self.game_state.is_in_battle()
         self._prev_pokemon_caught = self.game_state.get_pokedex_owned_count()
         self._prev_party_alive = self.game_state.get_party_alive_count()
+        self._battles_per_map = {}
+
+        # Reset new reward tracking
+        self._prev_money = self.game_state.get_money()
+        self._prev_pokemon_seen = self.game_state.get_pokedex_seen_count()
+        self._prev_item_count = self.game_state.get_item_count()
+        self._prev_event_flags = self.game_state.get_event_flags()
+        self._battle_start_party_hp = 0
+        self._battle_start_turn = 0
+        self._is_trainer_battle = False
 
         observation = self._get_observation()
         info = self._get_info()
@@ -189,10 +218,21 @@ class PokemonRedEnv(gym.Env):
         self.emulator.tick(self.action_freq - 8)  # Wait remaining frames
 
     def _get_observation(self) -> NDArray[np.uint8]:
-        """Get the current screen as observation."""
+        """Get the current screen as observation, optionally downscaled."""
         if self.emulator is None:
-            return np.zeros((144, 160, 3), dtype=np.uint8)
-        return self.emulator.get_screen()
+            shape = (36, 40, 3) if self.downscale else (144, 160, 3)
+            return np.zeros(shape, dtype=np.uint8)
+
+        screen = self.emulator.get_screen()  # (144, 160, 3)
+
+        if self.downscale:
+            # Downscale to 40x36 (width x height) for faster training
+            # Using BILINEAR for speed, LANCZOS for quality
+            img = Image.fromarray(screen)
+            img = img.resize((40, 36), Image.BILINEAR)
+            return np.array(img, dtype=np.uint8)
+
+        return screen
 
     def _calculate_reward(self) -> float:
         """Calculate reward based on game progress."""
@@ -220,21 +260,37 @@ class PokemonRedEnv(gym.Env):
             self._prev_pokemon_caught = pokemon_caught
 
         # ===================
-        # BATTLE REWARDS
+        # BATTLE REWARDS (with diminishing returns to prevent grinding)
         # ===================
+        map_id = self.game_state.get_map_id()
+        battles_here = self._battles_per_map.get(map_id, 0)
+        # Diminishing multiplier: 1.0 -> 0.5 -> 0.33 -> 0.25 -> ... (floors at 0.1)
+        diminish = max(0.1, 1.0 / (1 + battles_here * 0.2))
+
+        # Battle just started - record initial state
+        if in_battle and not self._was_in_battle:
+            self._battle_start_party_hp, _ = self.game_state.get_total_party_hp()
+            self._battle_start_turn = self.game_state.get_battle_turn_count()
+            self._is_trainer_battle = self.game_state.is_trainer_battle()
+
         if in_battle:
             enemy_hp, enemy_max_hp = self.game_state.get_enemy_hp()
 
-            # Reward for damaging enemy (scaled by damage dealt)
+            # Reward for damaging enemy (scaled by damage dealt, with diminishing returns)
             if self._prev_enemy_hp > 0 and enemy_hp < self._prev_enemy_hp:
                 damage_dealt = self._prev_enemy_hp - enemy_hp
                 # Normalize by max HP to give similar rewards regardless of enemy
                 if enemy_max_hp > 0:
-                    reward += 0.5 * (damage_dealt / enemy_max_hp)
+                    reward += 0.5 * diminish * (damage_dealt / enemy_max_hp)
+
+                # OHKO bonus: enemy went from full HP to 0 in one hit
+                if self._prev_enemy_hp == enemy_max_hp and enemy_hp == 0:
+                    reward += 0.5  # OHKO bonus
 
             # Reward for defeating enemy (enemy HP dropped to 0)
             if self._was_in_battle and self._prev_enemy_hp > 0 and enemy_hp == 0:
-                reward += 1.0  # Knocked out enemy
+                reward += 1.0 * diminish  # Knocked out enemy (diminishing)
+                self._battles_per_map[map_id] = battles_here + 1  # Track battle
 
             self._prev_enemy_hp = enemy_hp
 
@@ -242,14 +298,33 @@ class PokemonRedEnv(gym.Env):
         if self._was_in_battle and not in_battle:
             # Battle just ended
             party_alive = self.game_state.get_party_alive_count()
+            current_party_hp, _ = self.game_state.get_total_party_hp()
 
             # Penalty if we lost Pokemon (fainted)
             if party_alive < self._prev_party_alive:
                 fainted = self._prev_party_alive - party_alive
                 reward -= 1.0 * fainted  # Penalty per fainted Pokemon
 
+            # Whiteout detection (all Pokemon fainted)
+            if party_alive == 0:
+                reward -= 5.0  # Whiteout penalty
+
+            # Trainer battle bonus (more valuable than wild)
+            if self._is_trainer_battle:
+                reward += 2.0  # Trainer battle won bonus
+
+            # No damage taken bonus
+            if current_party_hp >= self._battle_start_party_hp and self._battle_start_party_hp > 0:
+                reward += 0.5  # Won without taking damage
+
+            # Efficient battle bonus (fewer turns = better)
+            battle_turns = self.game_state.get_battle_turn_count() - self._battle_start_turn
+            if battle_turns <= 2:
+                reward += 0.2 * (3 - battle_turns)  # +0.4 for 1 turn, +0.2 for 2 turns
+
             self._prev_party_alive = party_alive
             self._prev_enemy_hp = 0  # Reset enemy HP tracking
+            self._is_trainer_battle = False
 
         # Track battle state
         self._was_in_battle = in_battle
@@ -265,35 +340,58 @@ class PokemonRedEnv(gym.Env):
             if max_party_hp > 0:
                 reward += 0.2 * (hp_healed / max_party_hp)
 
-        # Small penalty for losing HP (encourages avoiding damage)
-        if current_party_hp < self._prev_party_hp:
-            hp_lost = self._prev_party_hp - current_party_hp
-            if max_party_hp > 0:
-                reward -= 0.05 * (hp_lost / max_party_hp)
-
         self._prev_party_hp = current_party_hp
 
         # ===================
-        # LEVELING REWARDS
+        # LEVELING REWARDS (with diminishing returns to prevent grinding)
         # ===================
         total_level = self.game_state.get_total_level()
         if total_level > self._prev_total_level:
-            reward += 0.5 * (total_level - self._prev_total_level)
+            reward += 0.5 * diminish * (total_level - self._prev_total_level)
             self._prev_total_level = total_level
 
         # ===================
-        # EXPLORATION REWARDS
+        # EXPLORATION REWARDS (boosted to encourage progression over grinding)
         # ===================
-        map_id = self.game_state.get_map_id()
+        # Note: map_id already defined above in battle rewards section
         if map_id not in self._visited_maps:
             self._visited_maps.add(map_id)
-            reward += 2.0  # New map discovered
+            reward += 5.0  # New map discovered (was 2.0)
 
         x, y = self.game_state.get_player_position()
         coord = (map_id, x, y)
         if coord not in self._visited_coords:
             self._visited_coords.add(coord)
-            reward += 0.005  # Small reward for new tiles
+            reward += 0.02  # Reward for new tiles (was 0.005)
+
+        # ===================
+        # MONEY REWARDS
+        # ===================
+        current_money = self.game_state.get_money()
+        if current_money > self._prev_money:
+            # Money gained (from battles, selling items, etc.)
+            money_gained = current_money - self._prev_money
+            reward += 0.01 * (money_gained / 100)  # +0.01 per $100
+        self._prev_money = current_money
+
+
+        # ===================
+        # ITEM REWARDS
+        # ===================
+        item_count = self.game_state.get_item_count()
+        if item_count > self._prev_item_count:
+            # Gained items (pickup, purchase, gift)
+            reward += 0.5 * (item_count - self._prev_item_count)
+        self._prev_item_count = item_count
+
+        # ===================
+        # EVENT FLAG REWARDS (story progress)
+        # ===================
+        current_flags = self.game_state.get_event_flags()
+        new_flags = current_flags - self._prev_event_flags
+        if new_flags:
+            reward += 3.0 * len(new_flags)  # +3.0 per new event flag
+            self._prev_event_flags = current_flags
 
         return reward
 
@@ -308,6 +406,7 @@ class PokemonRedEnv(gym.Env):
         info = {
             "step": self.step_count,
             "badges": self.game_state.get_badge_count(),
+            "badges_bitfield": self.game_state.get_badges(),  # Raw bitfield for individual badge checks
             "total_level": self.game_state.get_total_level(),
             "map_id": self.game_state.get_map_id(),
             "position": (x, y),
@@ -315,6 +414,8 @@ class PokemonRedEnv(gym.Env):
             "maps_visited": len(self._visited_maps),
             "coords_visited": len(self._visited_coords),
             "pokemon_caught": self.game_state.get_pokedex_owned_count(),
+            "pokemon_seen": self.game_state.get_pokedex_seen_count(),
+            "party_count": self.game_state.get_party_count(),  # Number of Pokemon in party
             "party_hp": party_hp,
             "party_max_hp": party_max_hp,
             "party_alive": self.game_state.get_party_alive_count(),
@@ -322,10 +423,37 @@ class PokemonRedEnv(gym.Env):
 
         # Add battle info if in battle
         if info["in_battle"]:
+            # Check if battle menu is ready (not in intro/animation)
+            info["battle_menu_ready"] = self.game_state.is_battle_menu_ready()
+
             enemy_hp, enemy_max_hp = self.game_state.get_enemy_hp()
             info["enemy_hp"] = enemy_hp
             info["enemy_max_hp"] = enemy_max_hp
             info["enemy_level"] = self.game_state.get_enemy_level()
+
+            # Always read Pokemon info during battle (prompt will validate if it's ready)
+            player_pokemon = self.game_state.get_active_pokemon_info()
+            enemy_pokemon = self.game_state.get_enemy_pokemon_info()
+            info["player_pokemon"] = player_pokemon
+            info["enemy_pokemon"] = enemy_pokemon
+
+        # Add menu/dialogue state
+        menu_state = self.game_state.get_menu_state()
+        info["menu_active"] = self.game_state.is_in_menu_or_dialogue()
+        info["has_menu_choice"] = self.game_state.has_menu_choice()
+        info["menu_cursor"] = menu_state["current_menu_item"]
+        info["menu_options"] = menu_state["max_menu_item"] + 1 if menu_state["max_menu_item"] > 0 else 0
+
+        # Input detection
+        info["waiting_for_input"] = self.game_state.is_waiting_for_input()
+
+        # Environment type (indoors/outdoors/cave) and exits
+        info["environment_type"] = self.game_state.get_environment_type()
+        if info["environment_type"] != "outdoors":
+            warps = self.game_state.get_warp_locations()
+            info["exits"] = [(w["x"], w["y"]) for w in warps]
+        else:
+            info["exits"] = []
 
         return info
 

@@ -206,6 +206,7 @@ def train_visual(
         batch_size=64,
         n_epochs=4,
         gamma=0.99,
+        ent_coef=0.01,  # Entropy bonus to prevent action collapse
         verbose=1,
     )
 

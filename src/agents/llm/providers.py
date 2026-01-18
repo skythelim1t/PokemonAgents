@@ -35,12 +35,22 @@ class LLMConfig:
 
 
 @dataclass
+class ToolCall:
+    """A tool call from the LLM."""
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
 class LLMResponse:
     """Response from LLM."""
 
     content: str
     usage: dict[str, int]  # tokens used
     raw_response: Any  # Full response for debugging
+    tool_calls: list[ToolCall] | None = None  # Tool calls if any
+    stop_reason: str | None = None  # Why the model stopped
 
 
 class BaseLLMProvider(ABC):
@@ -68,6 +78,27 @@ class BaseLLMProvider(ABC):
             LLMResponse with content, usage, and raw response
         """
         pass
+
+    def complete_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        image: bytes | None = None,
+    ) -> LLMResponse:
+        """
+        Generate a completion with tool calling support.
+
+        Args:
+            system_prompt: System instructions
+            messages: Conversation history
+            tools: Tool definitions
+            image: Optional PNG image bytes for vision models
+
+        Returns:
+            LLMResponse with content, tool_calls, usage, and raw response
+        """
+        raise NotImplementedError("Tool calling not implemented for this provider")
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -259,6 +290,75 @@ class BedrockProvider(BaseLLMProvider):
                 "output": result.get("usage", {}).get("output_tokens", 0),
             },
             raw_response=result,
+        )
+
+    def complete_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        image: bytes | None = None,
+    ) -> LLMResponse:
+        """Complete with tool calling using Anthropic Claude on Bedrock."""
+        import json
+
+        # If this is the first message and we have an image, add it
+        if image and messages and messages[0]["role"] == "user":
+            first_content = messages[0]["content"]
+            if isinstance(first_content, str):
+                messages[0]["content"] = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64.b64encode(image).decode("utf-8"),
+                        },
+                    },
+                    {"type": "text", "text": first_content},
+                ]
+
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": self.config.max_tokens,
+            "temperature": self.config.temperature,
+            "system": system_prompt,
+            "messages": messages,
+            "tools": tools,
+        }
+
+        response = self.client.invoke_model(
+            modelId=self.config.model,
+            body=json.dumps(body),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        result = json.loads(response["body"].read())
+
+        # Parse response content
+        text_content = ""
+        tool_calls = []
+
+        for block in result.get("content", []):
+            if block["type"] == "text":
+                text_content += block["text"]
+            elif block["type"] == "tool_use":
+                tool_calls.append(ToolCall(
+                    id=block["id"],
+                    name=block["name"],
+                    input=block["input"]
+                ))
+
+        return LLMResponse(
+            content=text_content,
+            usage={
+                "input": result.get("usage", {}).get("input_tokens", 0),
+                "output": result.get("usage", {}).get("output_tokens", 0),
+            },
+            raw_response=result,
+            tool_calls=tool_calls if tool_calls else None,
+            stop_reason=result.get("stop_reason"),
         )
 
     def _complete_llama(self, system_prompt: str, user_prompt: str) -> LLMResponse:
